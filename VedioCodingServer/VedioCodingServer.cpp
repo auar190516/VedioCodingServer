@@ -18,19 +18,14 @@ int main() {
 	// 初始化 OpenGL 环境
 	initializeOpenGL();
 
-	// 渲染循环
-	while (!glfwWindowShouldClose( window )) {
-		// 处理用户输入（如窗口关闭、键盘等）
-		glfwPollEvents();
 
-		// 渲染点云
-		renderPoints(points);
+	// 初始化 OpenGL
+	initializeOpenGL();
 
-		// 交换缓冲区，显示当前帧
-		glfwSwapBuffers(window);
-	}
+	// 只渲染一帧并保存
+	renderPoints(points, 1);
 
-	// 清理资源
+	// 退出 OpenGL
 	cleanupOpenGL();
 
 	return 0;

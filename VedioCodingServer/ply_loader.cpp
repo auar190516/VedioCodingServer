@@ -61,9 +61,9 @@ std::vector<Point> loadPLY(const std::string& filename) {
 		stream >> p.x >> p.y >> p.z >> p.r >> p.g >> p.b;
 
 		// 应用缩放和平移操作
-		p.x = (p.x + translateX) * scale;
-		p.y = (p.y + translateY) * scale;
-		p.z = (p.z + translateZ) * scale;
+		p.x = p.x * scale + translateX;
+		p.y = p.y * scale + translateY;
+		p.z = p.z * scale + translateZ;
 		p.r = p.r / 255.0f;
 		p.g = p.g / 255.0f;
 		p.b = p.b / 255.0f;
