@@ -6,75 +6,80 @@
 #include <vector>
 
 std::vector<Point> loadPLY(const std::string& filename) {
-	std::ifstream file(filename);
-	std::string line;
-	std::vector<Point> points;
-
+	std::ifstream file(filename, std::ios::binary); // 以二进制模式打开
 	if (!file.is_open()) {
 		std::cerr << "Failed to open file: " << filename << std::endl;
-		return points;
+		return {};
 	}
 
-	bool inHeader = true;
+	std::string line;
+	std::vector<Point> points;
+	bool isBinary = false;
 	int vertexCount = 0;
-	float scale = 1.0f;
-	float translateX = 0.0f, translateY = 0.0f, translateZ = 0.0f;
+	float scale = 0.179523f;
+	float translateX = -45.2095f, translateY = 7.18301f, translateZ = -54.3561f;
 
-	// 解析头部信息
+	// 解析 PLY 头部
 	while (std::getline(file, line)) {
-		// 跳过头部的注释
-		if (line.substr(0, 7) == "comment") {
-			// 提取缩放和平移信息
-			if (line.find("frame_to_world_scale") != std::string::npos) {
-				scale = std::stof(line.substr(line.find_last_of(" ") + 1));
-			}
-			if (line.find("frame_to_world_translation") != std::string::npos) {
-				std::istringstream stream(line.substr(line.find_last_of(" ") + 1));
-				stream >> translateX >> translateY >> translateZ;
-			}
-			continue;
+		if (line.find("format binary_little_endian") != std::string::npos) {
+			isBinary = true;
+		}
+		else if (line.find("format ascii") != std::string::npos) {
+			std::cerr << "ERROR: ASCII PLY files are not supported!" << std::endl;
+			return {};
 		}
 
-		// 解析顶点数量
 		if (line.substr(0, 15) == "element vertex ") {
 			vertexCount = std::stoi(line.substr(15));
 		}
 
-		// 找到头部结束
 		if (line == "end_header") {
-			inHeader = false;
-			break;
+			break; // 头部解析完毕
 		}
+	}
+
+	if (!isBinary) {
+		std::cerr << "ERROR: Only binary PLY format is supported!" << std::endl;
+		return {};
 	}
 
 	if (vertexCount == 0) {
-		std::cerr << "No vertices found in PLY header!" << std::endl;
-		return points;
+		std::cerr << "ERROR: No vertices found in PLY header!" << std::endl;
+		return {};
 	}
 
-	// 读取点云数据
-	while (std::getline(file, line)) {
-		std::istringstream stream(line);
+	// 现在文件指针在 "end_header" 之后，直接读取二进制数据
+	//points.reserve(vertexCount);
+	points.reserve(vertexCount);
+	for (int i = 0; i < vertexCount; ++i) {
 		Point p;
+		double dx, dy, dz; // 先用 double 读取 8 字节数据
 
-		// 读取每个点的坐标和颜色数据
-		stream >> p.x >> p.y >> p.z >> p.r >> p.g >> p.b;
+		// 读取 double 类型坐标（8 字节）
+		file.read(reinterpret_cast<char*>(&dx), sizeof(double));
+		file.read(reinterpret_cast<char*>(&dy), sizeof(double));
+		file.read(reinterpret_cast<char*>(&dz), sizeof(double));
 
-		// 应用缩放和平移操作
+		// 转换为 float 类型
+		p.x = static_cast<float>(dx);
+		p.y = static_cast<float>(dy);
+		p.z = static_cast<float>(dz);
 		p.x = p.x * scale + translateX;
 		p.y = p.y * scale + translateY;
 		p.z = p.z * scale + translateZ;
-		p.r = p.r / 255.0f;
-		p.g = p.g / 255.0f;
-		p.b = p.b / 255.0f;
+		// 读取 uint8_t 类型颜色
+		uint8_t r, g, b;
+		file.read(reinterpret_cast<char*>(&r), sizeof(uint8_t));
+		file.read(reinterpret_cast<char*>(&g), sizeof(uint8_t));
+		file.read(reinterpret_cast<char*>(&b), sizeof(uint8_t));
+
+		// 归一化颜色值
+		p.r = r / 255.0f;
+		p.g = g / 255.0f;
+		p.b = b / 255.0f;
+
 		points.push_back(p);
-
-		// 如果已经读取到指定数量的顶点，停止读取
-		if (points.size() >= vertexCount) {
-			break;
-		}
 	}
-
 	file.close();
 	return points;
 }

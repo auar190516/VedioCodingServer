@@ -91,7 +91,7 @@ void initializeOpenGL() {
 		exit(EXIT_FAILURE);
 	}
 
-	window = glfwCreateWindow(960, 1280, "Point Cloud Renderer", NULL, NULL);
+	window = glfwCreateWindow(480, 640, "Point Cloud Renderer", NULL, NULL);
 	if (!window) {
 		glfwTerminate();
 		std::cerr << "Failed to create GLFW window!" << std::endl;
@@ -103,9 +103,10 @@ void initializeOpenGL() {
 		std::cerr << "Failed to initialize OpenGL loader!" << std::endl;
 		exit(EXIT_FAILURE);
 	}
-
+	glEnable(GL_PROGRAM_POINT_SIZE); // 允许着色器控制点大小
+	glPointSize(5.0f);  // 设置默认点大小，可以调整
 	// 设置OpenGL视口
-	glViewport(0, 0, 960, 1280);
+	glViewport(0, 0, 480, 640);
 	//glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
 	// 创建着色器程序
 	GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
@@ -157,24 +158,22 @@ void renderPoints(const std::vector<Point>& points, int frameIndex) {
 	glBindVertexArray(0);
 
 	// 保存当前帧
-	saveFrame(frameIndex, 960, 1280); // 你可以传入 OpenGL 窗口的实际宽高
+	saveFrame(frameIndex, 480, 640); // 你可以传入 OpenGL 窗口的实际宽高
 }
-void renderPoints(const std::vector<Point>& points) {
+void renderPoints(const std::vector<Point>& points, std::vector<unsigned char>& frameBuffer) {
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 	glBindVertexArray(VAO);
-
 	glBindBuffer(GL_ARRAY_BUFFER, VBO);
 	glBufferData(GL_ARRAY_BUFFER, points.size() * sizeof(Point), points.data(), GL_STATIC_DRAW);
 
-	// 设置顶点属性指针
 	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Point), (void*)0);
 	glEnableVertexAttribArray(0);
 
 	glVertexAttribPointer(1, 3, GL_FLOAT, GL_TRUE, sizeof(Point), (void*)offsetof(Point, r));
 	glEnableVertexAttribArray(1);
 
-	// 设置矩阵（模型、视图、投影）
+	// 设置模型、视图、投影矩阵
 	glm::mat4 model = glm::mat4(1.0f);
 	glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 100.0f, -250.0f), glm::vec3(0.0f, 100.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
 	glm::mat4 projection = glm::perspective(glm::radians(60.0f), 1.0f, 1.0f, 1000.0f);
@@ -190,9 +189,10 @@ void renderPoints(const std::vector<Point>& points) {
 	glDrawArrays(GL_POINTS, 0, points.size());
 
 	glBindVertexArray(0);
+	frameBuffer.resize(480 * 640 * 3);
+	glPixelStorei(GL_PACK_ALIGNMENT, 1);
+	glReadPixels(0, 0, 480, 640, GL_RGB, GL_UNSIGNED_BYTE, frameBuffer.data());
 }
-
-
 void cleanupOpenGL() {
 	glDeleteVertexArrays(1, &VAO);
 	glDeleteBuffers(1, &VBO);

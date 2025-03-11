@@ -9,7 +9,7 @@
 extern GLFWwindow* window;
 
 void initializeOpenGL();
-void renderPoints(const std::vector<Point>& points);
 void renderPoints(const std::vector<Point>& points, int frameIndex);
+void renderPoints(const std::vector<Point>& points, std::vector<unsigned char>& frameBuffer);
 void cleanupOpenGL();
 #endif // OPENGL_RENDERER_H
