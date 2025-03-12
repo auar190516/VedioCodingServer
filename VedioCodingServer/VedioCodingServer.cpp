@@ -59,21 +59,6 @@ int main() {
 		}
 	}
 
-	//std::string filename = "D:\\Graduate\\VedioCodingServer\\VedioCodingServer\\test.ply";
-	// 
-	// 单帧测试
-	//std::string filename = "D:\\Graduate\\longdress\\longdress\\ply_downsample_005\\longdress_vox10_1051.ply";
-
-	//std::vector<Point> points = loadPLY(filename);
-
-	//// 如果加载失败或者没有点数据，跳过该文件
-	//if (points.empty()) {
-	//	std::cerr << "Failed to load PLY file or no points found in " << filename << std::endl;
-	//}
-	//std::cout << "Loaded " << points.size() << " points from " << filename << std::endl;
-
-	//// 渲染点云并保存，使用当前帧编号
-	//renderPoints(points, 1);
 
 	// 退出 OpenGL
 	cleanupOpenGL();
