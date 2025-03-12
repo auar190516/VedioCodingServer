@@ -6,10 +6,15 @@
 #include <GLFW/glfw3.h>
 #include "ply_loader.h"
 
-extern GLFWwindow* window;
+struct OpenGLContext {
+	GLFWwindow* window;
+	GLuint shaderProgram;
+	GLuint VBO;
+	GLuint VAO;
+};
 
-void initializeOpenGL();
-void renderPoints(const std::vector<Point>& points, int frameIndex);
-void renderPoints(const std::vector<Point>& points, std::vector<unsigned char>& frameBuffer);
-void cleanupOpenGL();
+OpenGLContext initializeOpenGL();
+//void renderPoints(const std::vector<Point>& points, int frameIndex);
+void renderPoints(OpenGLContext& context, const std::vector<Point>& points, std::vector<unsigned char>& frameBuffer);
+void cleanupOpenGL(OpenGLContext& context);
 #endif // OPENGL_RENDERER_H
