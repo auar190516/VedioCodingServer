@@ -4,21 +4,44 @@
 #include <mutex>
 #include <condition_variable>
 #include <filesystem>
+#include <unordered_map>
+#include <atomic>
+#include <sstream>
+
 #include "ply_loader.h"
 #include "opengl_renderer.h"
 #include "rtp_streamer.h"
+
 #include <chrono>
 #include <thread>
 
+#include <WinSock2.h>
+#include <WS2tcpip.h>
+#pragma  comment(lib, "Ws2_32.lib")
 namespace fs = std::filesystem;
-
+// 结构体管理客户端信息
+struct ClientInfo {
+	SOCKET socket;
+	int rtpPort;
+	bool is3D;  // 是否请求 3D 数据
+	bool active;
+	double posX, posY, posZ;//客户端位置
+};
 std::vector<Point> currentFrameData;
 std::mutex dataMutex;
 std::condition_variable dataCV;
 bool newDataAvailable = false;
 bool stopProcessing = false;
+
+std::mutex renderNumMutex;
 int renderCount = 0;
-int num_render_thread = 1;
+std::condition_variable ReadFileCV;
+//int num_render_thread = 0;//一共的渲染线程
+
+std::mutex clientMutex;
+std::unordered_map<SOCKET, struct ClientInfo> clientStatus;
+const int SERVER_PORT = 8888;
+std::atomic<bool> serverRunning(true);
 
 void fileReaderThread(const std::string& folderPath) {
 
@@ -35,11 +58,14 @@ void fileReaderThread(const std::string& folderPath) {
 			}
 
 			{
-				std::unique_lock<std::mutex> lock(dataMutex);
-				dataCV.wait(lock, [] { return renderCount == 0; });  // 确保上一帧已被所有线程处理完
+				std::unique_lock<std::mutex> lock(renderNumMutex);
+				ReadFileCV.wait(lock, [] { return renderCount == 0; });  // 确保上一帧已被所有线程处理完
 				currentFrameData = points;
 				newDataAvailable = true;
-				renderCount = num_render_thread;  // 重置渲染计数
+				{
+					std::unique_lock<std::mutex> lock(clientMutex);
+					renderCount = static_cast<int>(clientStatus.size());  // 重置渲染计数
+				}
 			}
 
 			dataCV.notify_all();  // 广播通知所有渲染线程
@@ -60,10 +86,34 @@ void fileReaderThread(const std::string& folderPath) {
 	}
 	dataCV.notify_all();  // 让所有线程退出
 }
-void renderThread(RTPStreamer& streamer, int threadID) {
+void renderThread(SOCKET clientSocket) {
 	OpenGLContext context = initializeOpenGL();  // 每个线程独立创建 OpenGL 上下文
-
-	while (true) {
+	//int rtpPort;
+	//bool is3D;
+	/*{
+		std::lock_guard<std::mutex> lock(clientMutex);
+		rtpPort = clientStatus[clientSocket].rtpPort;
+		is3D = clientStatus[clientSocket].is3D;
+	}*/
+	std::string rtpURL = "rtp://127.0.0.1:" + std::to_string(5004); //暂时使用5004
+	RTPStreamer streamer(rtpURL, 480, 640);
+	streamer.startStreaming();
+	while (serverRunning) {
+		{
+			std::lock_guard<std::mutex> lock(clientMutex);
+			if (clientStatus.find(clientSocket) == clientStatus.end() || //计数要--
+				!clientStatus[clientSocket].active) {
+					{
+						std::lock_guard<std::mutex> lock(renderNumMutex);
+						renderCount--;
+						if (renderCount == 0) {  // 所有线程都获取了这帧数据
+							newDataAvailable = false;
+							ReadFileCV.notify_one();  // 通知 fileReaderThread 继续读取
+						}
+					}
+				break;
+			}
+		}
 		std::vector<Point> localFrameData;
 
 		{
@@ -80,81 +130,150 @@ void renderThread(RTPStreamer& streamer, int threadID) {
 		std::vector<unsigned char> frameBuffer;
 		renderPoints(context, localFrameData, frameBuffer);
 		streamer.sendFrame(frameBuffer);
+
 		{
-			std::lock_guard<std::mutex> lock(dataMutex);
+			std::lock_guard<std::mutex> lock(renderNumMutex);
 			renderCount--;
 			if (renderCount == 0) {  // 所有线程都获取了这帧数据
 				newDataAvailable = false;
-				dataCV.notify_one();  // 通知 fileReaderThread 继续读取
+				ReadFileCV.notify_one();  // 通知 fileReaderThread 继续读取
 			}
 		}
 	}
 
+	streamer.stopStreaming();
 	cleanupOpenGL(context);
+	/*{
+		std::lock_guard<std::mutex> lock(clientMutex);
+		clientStatus.erase(clientSocket);
+	}*/
 }
+// 客户端消息接收线程：接收客户端发送的控制命令（如位置信息、模式切换）并更新状态
+void clientMessageThread(SOCKET clientSocket) {
+	char buffer[1024];
+	while (serverRunning) {
+		int recvLen = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
+		if (recvLen <= 0) {
+			// 客户端关闭连接或发生错误，更新状态
+			std::lock_guard<std::mutex> lock(clientMutex);
+			if (clientStatus.find(clientSocket) != clientStatus.end())
+				clientStatus[clientSocket].active = false;
+			break;
+		}
+		buffer[recvLen] = '\0';
+		std::istringstream iss(buffer);
+		std::string command;
+		iss >> command;
+		if (command == "LOCATION") {
+			double x, y, z;
+			iss >> x >> y >> z;
+			{
+				std::lock_guard<std::mutex> lock(clientMutex);
+				if (clientStatus.find(clientSocket) != clientStatus.end()) {
+					clientStatus[clientSocket].posX = x;
+					clientStatus[clientSocket].posY = y;
+					clientStatus[clientSocket].posZ = z;
+				}
+			}
+			std::cout << "Received location from client " << clientSocket
+				<< ": (" << x << ", " << y << ", " << z << ")\n";
+		}
+		else if (command == "MODE") {
+			std::string mode;
+			iss >> mode;
+			{
+				std::lock_guard<std::mutex> lock(clientMutex);
+				if (clientStatus.find(clientSocket) != clientStatus.end()) {
+					clientStatus[clientSocket].is3D = (mode == "3D");
+				}
+			}
+			std::cout << "Client " << clientSocket << " set mode to "
+				<< mode << "\n";
+		}
+		// 可根据需要添加更多命令处理逻辑
+	}
+	// 关闭 socket 并从客户端集合中移除
+	closesocket(clientSocket);
+	std::lock_guard<std::mutex> lock(clientMutex);
+	clientStatus.erase(clientSocket);
+}
+// 服务器线程
+void serverThread() {
+	WSADATA wsaData;
+	WSAStartup(MAKEWORD(2, 2), &wsaData);
+
+	SOCKET serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+	if (serverSocket == INVALID_SOCKET) {
+		std::cerr << "Failed to create server socket\n";
+		return;
+	}
+
+	sockaddr_in serverAddr{};
+	serverAddr.sin_family = AF_INET;
+	serverAddr.sin_addr.s_addr = INADDR_ANY;
+	serverAddr.sin_port = htons(SERVER_PORT);
+
+	if (bind(serverSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+		std::cerr << "Bind failed\n";
+		return;
+	}
+
+	if (listen(serverSocket, 5) == SOCKET_ERROR) {
+		std::cerr << "Listen failed\n";
+		return;
+	}
+
+	std::cout << "Server listening on port " << SERVER_PORT << std::endl;
+
+	while (serverRunning) {
+		sockaddr_in clientAddr;
+		int clientLen = sizeof(clientAddr);
+		SOCKET clientSocket = accept(serverSocket, (sockaddr*)&clientAddr, &clientLen);
+		if (clientSocket == INVALID_SOCKET) {
+			std::cerr << "Failed to accept connection\n";
+			continue;
+		}
+
+		int rtpPort = 5000 + clientSocket % 1000;
+		{
+			std::lock_guard<std::mutex> lock(clientMutex);
+			clientStatus[clientSocket] = { clientSocket, rtpPort, false, true, 0, 0, 0 };
+		}
+
+		std::cout << "New client connected: " << clientSocket << ", RTP Port: " << rtpPort << std::endl;
+		std::thread(renderThread, clientSocket).detach();
+	}
+
+	closesocket(serverSocket);
+	WSACleanup();
+}
+
 // 主函数
 int main() {
 	// 文件夹路径
 	std::string folderPath = "D:\\Graduate\\longdress\\longdress\\ply_downsample_001\\";
-	std::string rtpURL = "rtp://127.0.0.1:5004";
+	//std::string rtpURL = "rtp://127.0.0.1:5004";
 	//std::string rtpURL = "b.mp4";
-	RTPStreamer streamer(rtpURL, 480, 640);
-	streamer.startStreaming();
+	//RTPStreamer streamer(rtpURL, 480, 640);
+	//streamer.startStreaming();
 
 	//// 目标 FPS
 	//const int TARGET_FPS = 30;
 	//const int FRAME_TIME_MS = 1000 / TARGET_FPS;  // 计算目标帧时间 (毫秒)
 	std::thread readerThread(fileReaderThread, folderPath);
-	std::vector<std::thread> renderThreads;
-	for (int i = 0; i < 1; i++) { 
-		renderThreads.emplace_back(renderThread, std::ref(streamer), i);
-	}
-	// 等待所有线程结束
+	std::thread server(serverThread);
+
 	readerThread.join();
-	for (auto& t : renderThreads) {
-		t.join();
+	serverRunning = false;
+
+	{
+		std::lock_guard<std::mutex> lock(clientMutex);
+		for (auto& [client, thread] : clientStatus) {
+			closesocket(client);
+		}
 	}
-	streamer.stopStreaming();
-	// 帧编号计数器
-	//int frameNumber = 1;
-		 //遍历文件夹中的所有文件
-	//for (const auto& entry : fs::directory_iterator(folderPath)) {
-	//	auto frame_start = std::chrono::high_resolution_clock::now();  // 记录帧开始时间
-	//	// 检查文件扩展名是否为 .ply
-	//	if (entry.path().extension() == ".ply") {
-	//		// 加载PLY文件
-	//		std::string filename = entry.path().string();
-	//		std::vector<Point> points = loadPLY(filename);
 
-	//		// 如果加载失败或者没有点数据，跳过该文件
-	//		if (points.empty()) {
-	//			std::cerr << "Failed to load PLY file or no points found in " << filename << std::endl;
-	//			continue;
-	//		}
+	server.join();
 
-	//		//std::cout << "Loaded " << points.size() << " points from " << filename << std::endl;
-
-	//		// 渲染点云并保存，使用当前帧编号
-	//		std::vector<unsigned char> frameBuffer;
-	//		renderPoints(points, frameBuffer);
-	//		std::cout << frameBuffer.size() << std::endl;
-	//		streamer.sendFrame(frameBuffer);
-	//		// 增加帧编号
-	//		//frameNumber++;
-	//		// 控制帧率
-	//		
-	//	}
-	//	auto frame_end = std::chrono::high_resolution_clock::now();
-	//	int elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(frame_end - frame_start).count();
-	//	int sleep_time = FRAME_TIME_MS - elapsed_time;
-	//	if (sleep_time > 0) {
-	//		std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time));  // 让线程休眠
-	//	}
-	//}
-
-
-	//// 退出 OpenGL
-	//cleanupOpenGL();
-	//streamer.stopStreaming();
 	return 0;
 }
