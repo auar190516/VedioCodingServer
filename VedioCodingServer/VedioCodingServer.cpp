@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <atomic>
 #include <sstream>
+#include <fstream>
 
 #include "ply_loader.h"
 #include "opengl_renderer.h"
@@ -43,6 +44,9 @@ std::unordered_map<SOCKET, struct ClientInfo> clientStatus;
 const int SERVER_PORT = 8888;
 std::atomic<bool> serverRunning(true);
 
+std::atomic<int> currentFrameIndex = 0;
+
+const std::string drcFolderPath = "D:\\Graduate\\longdress\\longdress\\drc_001\\";
 void fileReaderThread(const std::string& folderPath) {
 
 	const int TARGET_FRAME_TIME_MS = 100;
@@ -67,7 +71,7 @@ void fileReaderThread(const std::string& folderPath) {
 					renderCount = static_cast<int>(clientStatus.size());  // 重置渲染计数
 				}
 			}
-
+			currentFrameIndex++;
 			dataCV.notify_all();  // 广播通知所有渲染线程
 
 			auto frame_end = std::chrono::high_resolution_clock::now();
@@ -86,6 +90,7 @@ void fileReaderThread(const std::string& folderPath) {
 	}
 	dataCV.notify_all();  // 让所有线程退出
 }
+
 void renderThread(SOCKET clientSocket) {
 	OpenGLContext context = initializeOpenGL();  // 每个线程独立创建 OpenGL 上下文
 	//int rtpPort;
@@ -114,29 +119,70 @@ void renderThread(SOCKET clientSocket) {
 				break;
 			}
 		}
-		std::vector<Point> localFrameData;
 
 		{
 			std::unique_lock<std::mutex> lock(dataMutex);
 			dataCV.wait(lock, [] { return newDataAvailable || stopProcessing; });
-
 			if (stopProcessing) {
 				break;
 			}
-
-			localFrameData = currentFrameData;  // 复制数据
 		}
-
-		std::vector<unsigned char> frameBuffer;
-		renderPoints(context, localFrameData, frameBuffer);
-		streamer.sendFrame(frameBuffer);
-
+		
+		bool trans3D = false;
 		{
-			std::lock_guard<std::mutex> lock(renderNumMutex);
-			renderCount--;
-			if (renderCount == 0) {  // 所有线程都获取了这帧数据
-				newDataAvailable = false;
-				ReadFileCV.notify_one();  // 通知 fileReaderThread 继续读取
+			std::lock_guard<std::mutex> lock(clientMutex);
+			trans3D = clientStatus[clientSocket].is3D;
+		}
+		if (trans3D) {
+			// 如果需要传输 3D 点云
+			// 根据 currentFrameIndex 生成 DRC 文件路径
+			std::string drcFileName = std::to_string(1051 + currentFrameIndex) + ".drc";
+			std::string drcFilePath = drcFolderPath + drcFileName;
+			// 打开文件
+			std::ifstream file(drcFilePath, std::ios::binary);
+			if (!file.is_open()) {
+				std::cerr << "Failed to open DRC file: " << drcFilePath << std::endl;
+				return;
+			}
+			// 获取文件大小
+			std::streamsize fileSize = file.tellg();
+			file.seekg(0, std::ios::beg); 
+			int bytesSent = send(clientSocket, reinterpret_cast<const char*>(&fileSize), sizeof(fileSize), 0);
+			if (bytesSent == SOCKET_ERROR) {
+				std::cerr << "Failed to send file size" << std::endl;
+				file.close();
+				return;
+			}
+			// 读取文件并分块发送
+			char buffer[1024];
+			while (!file.eof()) {
+				file.read(buffer, sizeof(buffer));
+				size_t bytesRead = file.gcount();
+				int bytesSent = send(clientSocket, buffer, bytesRead, 0);
+				if (bytesSent == SOCKET_ERROR) {
+					std::cerr << "Failed to send DRC file" << std::endl;
+					break;
+				}
+			}
+
+			// 关闭文件
+			file.close();
+			std::cout << "DRC file sent successfully." << std::endl;
+		}
+		else {
+			std::vector<Point> localFrameData;
+			localFrameData = currentFrameData;  // 复制数据
+			std::vector<unsigned char> frameBuffer;
+			renderPoints(context, localFrameData, frameBuffer);
+			streamer.sendFrame(frameBuffer);
+
+			{
+				std::lock_guard<std::mutex> lock(renderNumMutex);
+				renderCount--;
+				if (renderCount == 0) {  // 所有线程都获取了这帧数据
+					newDataAvailable = false;
+					ReadFileCV.notify_one();  // 通知 fileReaderThread 继续读取
+				}
 			}
 		}
 	}
